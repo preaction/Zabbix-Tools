@@ -6,24 +6,26 @@ use Getopt::Long;
 use DBI;
 use Pod::Usage;
 
-my ( $user, $pass );
+my ( $user, $pass, $repair, $threshold, $kill );
 
 GetOptions(
-    'h|help'    => sub { print pod2usage( verbose => 1 ) && exit 0 },
-    'man'       => sub { print pod2usage( verbose => 2 ) && exit 0 },
-    'u:s'       => \$user,
-    'p:s'       => \$pass,
-    'repair'    => \$repair,
+    'h|help'            => sub { print pod2usage( verbose => 1 ) && exit 0 },
+    'man'               => sub { print pod2usage( verbose => 2 ) && exit 0 },
+    'u:s'               => \$user,
+    'p:s'               => \$pass,
+    'repair'            => \$repair,
+    't|threshold:i'     => \$threshold,
+    'kill'              => \$kill,
 );
 
 my $command = $ARGV[0];
 pod2usage( msg => "Must specify a command" )        unless $command;
 pod2usage( msg => "Invalid command '$command'" )    unless main->can( $command );
 
-my $dbh = DBI->connect( 'dbi:mysql:', $user, $pass, { PrintError => 0 } ) 
+my $dbh = DBI->connect( 'dbi:mysql:', $user, $pass, { RaiseError => 1 } ) 
     or die $DBI::errstr;
 
-exit main->can( $command )->();
+print main->can( $command )->();
 
 sub check_tables {
     my $exit    = 0; # Default to okay
@@ -57,7 +59,36 @@ sub check_tables {
                 }
             }
             if ( $corrupt ) {
-                printf "%s is corrupt: %s\n", $table, $text;
+                warn sprintf "%s is corrupt: %s\n", $table, $text;
+                $exit++;
+            }
+        }
+    }
+
+    return $exit;
+}
+
+sub long_query {
+    my $exit    = 0; # Default to okay
+    my $proc    = $dbh->selectall_arrayref( "SHOW FULL PROCESSLIST" );
+
+    for my $p ( @$proc ) {
+        my $p_id    = $p->[0];
+        my $p_time  = $p->[5];
+        my $p_query = $p->[7];
+        if ( $p_time > $threshold ) {
+            # Try to kill the query
+            warn sprintf "Query over time threshold (ran for %s) '%s'\n", 
+                $p_time, $p_query
+                ;
+            # Do not kill "REPAIR TABLE" or "OPTIMIZE TABLE" will result in a 
+            # corrupt table
+            # http://dev.mysql.com/doc/refman/5.1/en/kill.html
+            if ( $kill && lc $p_query !~ /^repair table/ 
+                && lc $p_query !~ /^optimize table/ ) {
+                $dbh->do( "KILL QUERY " . $dbh->quote( $p_id ) );
+            }
+            else {
                 $exit++;
             }
         }
@@ -80,6 +111,8 @@ mysql-monitor.pl -- Report the status of various mysql stuff
 
  mysql-monitor.pl check_tables [--repair]
 
+ mysql-monitor.pl long_query --threshold=<seconds> [--kill]
+
 =head1 COMMANDS
 
 =head2 check_tables
@@ -94,6 +127,25 @@ tables that are corrupt.
 =item --repair
 
 Try to automatically repair the table, only report if failed
+
+=back
+
+=head2 long_query
+
+Check for long-running queries and kill if desired.
+
+=head3 Arguments
+
+=over 4
+
+=item --threshold
+
+Number of seconds before a query should be killed.
+
+=item --kill
+
+If set, try to kill the query automatically. Will not kill queries that
+will result in corrupted tables (REPAIR TABLE and OPTIMIZE TABLE).
 
 =back
 
