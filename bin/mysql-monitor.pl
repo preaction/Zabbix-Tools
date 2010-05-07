@@ -35,7 +35,9 @@ sub check_tables {
 
     # Get all tables in these databases
     my @tables  = ();
-    for my $db ( @$dbs ) {
+    DB: for my $db ( @$dbs ) {
+        next DB if $db eq 'mysql'
+                || $db eq 'information_schema';
         my $quoted_db = $dbh->quote_identifier( $db );
         push @tables, 
             map { $quoted_db . "." . $dbh->quote_identifier( $_ ) }
@@ -46,7 +48,7 @@ sub check_tables {
     my $checks = $dbh->selectall_arrayref( "CHECK TABLE " . join( ", ", @tables ) );
     for my $check ( @$checks ) {
         my ( $table, undef, $status, $text ) = @$check;
-        if ( lc $text eq "error" ) {
+        if ( lc $status eq "error" ) {
             my $corrupt = 1;
             if ( $repair ) {
                 # Try to repair
